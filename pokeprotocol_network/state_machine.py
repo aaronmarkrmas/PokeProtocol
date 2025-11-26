@@ -147,3 +147,10 @@ class BattleStateMachine:
         """Generate next sequence number (you'll replace this with network layer)"""
         import random
         return random.randint(1000, 9999)
+
+    def handle_resolution_request(self, msg):
+        """Handle incoming resolution request"""
+        print(f"[RESOLUTION] Accepting opponent's calculation")
+        self.transition_state("CONFIRMING_CALCULATION")
+        return self.generate_calculation_confirm()
+
