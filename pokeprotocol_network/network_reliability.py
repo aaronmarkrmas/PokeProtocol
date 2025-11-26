@@ -11,6 +11,7 @@ class ReliableSender:
         self.peer = peer_addr
         self.seq_num = 1
         self.outbox: Dict[int, Dict] = {} 
+        self.lock = Lock()
 
     def send(self, msg_dict: Dict[str, str]):
         """Send message reliably with sequence number and retry"""
