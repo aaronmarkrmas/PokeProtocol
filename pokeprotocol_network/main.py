@@ -6,6 +6,10 @@ from network_reliability import ReliableSender
 from handshake import connect_to_host, start_host
 from callback_interface import on_incoming_event
 from messages import parse_message, serialize_message
+from pokemon import load_pokemon, get_sample_pokemon
+from battle_engine import BattleEngine
+from state_machine import BattleStateMachine
+from chat_display import ChatDisplay
 
 # === CONFIGURATION ===
 IS_HOST = False           # True = Host, False = Joiner
@@ -20,6 +24,10 @@ seed = None
 handshake_done = False
 battle_setup_sent = False
 received_seq_numbers = set()  # For deduplicating incoming messages
+pokemon_data = None
+battle_engine = None
+state_machine = None
+chat_display = None
 
 
 def packet_handler(raw: str, addr):
@@ -28,6 +36,15 @@ def packet_handler(raw: str, addr):
     Parses message, sends bare ack_number, and routes based on message_type.
     """
     global reliable, seed, udp, handshake_done, battle_setup_sent, received_seq_numbers
+    global pokemon_data, battle_engine, state_machine, chat_display
+
+    if pokemon_data is None:
+        pokemon_data = load_pokemon('pokemon.csv')
+        if not pokemon_data:
+            pokemon_data = get_sample_pokemon()
+        battle_engine = BattleEngine(pokemon_data)
+        state_machine = BattleStateMachine(battle_engine)
+        chat_display = ChatDisplay()
 
     if udp.peer_addr is None:
         udp.peer_addr = addr
