@@ -1,6 +1,4 @@
 import base64
-from PIL import Image
-import io
 import os
 
 class ChatDisplay:
@@ -26,15 +24,14 @@ class ChatDisplay:
     def display_text_message(self, sender, message):
         """Display a text chat message"""
         print(f"💬 [{sender}]: {message}")
-        # In a GUI app, you'd update the chat UI here
         
     def display_sticker(self, sender, base64_data):
-        """Display a sticker from Base64 data"""
+        """Display a sticker from Base64 data (without PIL)"""
         try:
             # Decode Base64 data
             sticker_bytes = base64.b64decode(base64_data)
             
-            # Create images directory if it doesn't exist
+            # Create stickers directory if it doesn't exist
             os.makedirs('stickers', exist_ok=True)
             
             # Save sticker to file
@@ -43,15 +40,8 @@ class ChatDisplay:
                 f.write(sticker_bytes)
                 
             print(f"🎨 [{sender}] sent a sticker: saved as {filename}")
+            print(f"   Sticker size: {len(sticker_bytes)} bytes")
             
-            # Optional: Display using PIL (if running in GUI environment)
-            try:
-                image = Image.open(io.BytesIO(sticker_bytes))
-                print(f"   Sticker size: {image.size}")
-                # image.show()  # Uncomment to automatically display
-            except Exception as e:
-                print(f"   Could not display sticker: {e}")
-                
         except Exception as e:
             print(f"Error processing sticker from {sender}: {e}")
     
