@@ -1,3 +1,4 @@
+import random
 from moves import MOVES, get_type_effectiveness
 
 class BattleEngine:
