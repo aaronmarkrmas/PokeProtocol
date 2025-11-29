@@ -1,4 +1,3 @@
-
 # function: parse_message reads structured text input (key: value format)
 # and converts it into a Python dictionary.
 
@@ -8,10 +7,14 @@ def parse_message(raw: str) -> dict:
     Ignores lines without ':'.
     """
     result = {}
-    for line in raw.strip().splitlines():
-        if ':' in line:
-            key, value = line.split(':', 1)
-            result[key.strip()] = value.strip()
+    try:
+        for line in raw.strip().splitlines():
+            if ':' in line:
+                key, value = line.split(':', 1)
+                result[key.strip()] = value.strip()
+    except Exception as e:
+        print(f"[ERROR] Failed to parse message: {e}")
+        return {}
     return result
 
 # function: serialize_message performs the reverse — it converts a dictionary
