@@ -102,6 +102,7 @@ def _flip_turn():
     """Flip turn ownership and prompt."""
     global my_turn
     my_turn = not my_turn
+    print(f"[TURN] Turn flipped. Now my_turn = {my_turn}")
     _prompt_turn()
 
 
@@ -133,9 +134,15 @@ def _send_setup_interactive(default_name: str = None):
 
     my_pokemon_name = pokemon_name
 
+    # Set up our Pokémon in battle engine immediately
     if battle_engine:
-        battle_engine.set_pokemon("my_pokemon", pokemon_name)
-        battle_engine.is_my_turn = IS_HOST  # Host goes first
+        # We don't know opponent yet, so set our Pokémon only
+        if pokemon_name.lower() in pokemon_data:
+            battle_engine.my_pokemon = pokemon_data[pokemon_name.lower()]
+            print(f"[BATTLE] Set my Pokémon: {battle_engine.my_pokemon.name}")
+        else:
+            print(f"[ERROR] Pokémon '{pokemon_name}' not found in database!")
+            return
 
     try:
         boosts = input("Enter stat_boosts JSON (or press Enter for default): ").strip()
@@ -157,6 +164,16 @@ def _send_setup_interactive(default_name: str = None):
     reliable.send(battle_setup_msg)
     my_setup_sent = True
     print(f"[YOU] Sent BATTLE_SETUP for {pokemon_name}")
+    
+    # If we already received opponent's setup, set up the battle properly
+    if opponent_setup_received and battle_engine and opponent_pokemon_name:
+        if opponent_pokemon_name.lower() in pokemon_data:
+            battle_engine.opponent_pokemon = pokemon_data[opponent_pokemon_name.lower()]
+            print(f"[BATTLE] Set opponent Pokémon: {battle_engine.opponent_pokemon.name}")
+            battle_engine.is_my_turn = IS_HOST
+            my_turn = IS_HOST
+            print(f"[BATTLE] Battle ready! My turn: {my_turn}")
+    
     _maybe_prompt_after_setup()
 
 
@@ -164,7 +181,7 @@ def _send_attack(move_name: str):
     """
     Send ATTACK_ANNOUNCE only when it's our turn and setups are complete.
     """
-    global reliable, my_turn, state_machine
+    global reliable, my_turn, state_machine, battle_engine
     if reliable is None:
         print("[WARN] Not connected yet.")
         return
@@ -175,6 +192,10 @@ def _send_attack(move_name: str):
     if not my_turn:
         print("[WARN] Not your turn. Wait for opponent's move.")
         return
+    if not battle_engine or not battle_engine.my_pokemon or not battle_engine.opponent_pokemon:
+        print("[WARN] Battle not properly set up. Missing Pokémon.")
+        return
+        
     move_name = (move_name or "").strip()
     if not move_name:
         print("[WARN] Move name required. Usage: attack <MoveName>")
@@ -193,6 +214,26 @@ def _send_attack(move_name: str):
     }
     reliable.send(attack_msg)
     print(f"[YOU] Sent ATTACK_ANNOUNCE: {move_name}")
+    
+    # Process our attack locally first
+    if battle_engine:
+        turn_result = battle_engine.handle_attack_announce(move_name, is_opponent_attack=False)
+        print(f"[BATTLE] {turn_result['status_message']}")
+        print(f"[BATTLE] Dealt {turn_result['damage_dealt']} damage. Opponent HP: {turn_result['defender_hp_remaining']}")
+        
+        if turn_result['defender_fainted']:
+            print(f"[VICTORY] You defeated {battle_engine.opponent_pokemon.name}!")
+            game_over_msg = {
+                "message_type": "GAME_OVER",
+                "winner": battle_engine.my_pokemon.name,
+                "loser": battle_engine.opponent_pokemon.name
+            }
+            reliable.send(game_over_msg)
+            global game_over
+            game_over = True
+        else:
+            # Wait for opponent's response
+            _flip_turn()
 
 
 def _send_chat(text: str):
@@ -271,8 +312,9 @@ def packet_handler(raw: str, addr):
     """
     global reliable, seed, udp, handshake_done
     global pokemon_data, battle_engine, state_machine, chat_display
-    global opponent_setup_received, game_over, my_pokemon_name, opponent_pokemon_name
+    global opponent_setup_received, game_over, my_pokemon_name, opponent_pokemon_name, my_turn
 
+    # Initialize battle components if not done
     if pokemon_data is None:
         pokemon_data = load_pokemon('pokemon.csv')
         if not pokemon_data:
@@ -280,6 +322,7 @@ def packet_handler(raw: str, addr):
         battle_engine = BattleEngine(pokemon_data)
         state_machine = BattleStateMachine(battle_engine)
         chat_display = ChatDisplay()
+        print("[INIT] Battle components initialized")
 
     # Establish peer and reliable sender if not set
     if udp.peer_addr is None:
@@ -291,16 +334,29 @@ def packet_handler(raw: str, addr):
         reliable = ReliableSender(udp, addr)
         print("[INIT] ReliableSender created")
 
-    msg = parse_message(raw)
+    # Safely parse the message
+    try:
+        msg = parse_message(raw)
+    except Exception as e:
+        print(f"[ERROR] Failed to parse message: {e}")
+        print(f"[DEBUG] Raw message: {raw}")
+        return
 
+    if not msg:
+        print(f"[WARN] Empty or invalid message received: {raw}")
+        return
+
+    # Handle ACK messages
     if "ack_number" in msg:
         try:
             ack_num = int(msg["ack_number"])
         except ValueError:
             return
-        reliable.acknowledge(ack_num)
+        if reliable:
+            reliable.acknowledge(ack_num)
         return
 
+    # Handle sequence numbers for deduplication
     seq = None
     seq_str = msg.get("sequence_number")
     if seq_str is not None:
@@ -311,6 +367,7 @@ def packet_handler(raw: str, addr):
 
     if seq is not None:
         if _add_seq_if_new(seq):
+            print(f"[DUPLICATE] Ignoring duplicate message #{seq}")
             return
 
     # Send ACK for any message with a sequence_number
@@ -320,7 +377,6 @@ def packet_handler(raw: str, addr):
             "ack_number": seq
         }
         udp.send(serialize_message(ack_msg), addr)
-        print(f"[SEND ACK #{seq}]")
 
     mtype = msg.get("message_type")
 
@@ -351,44 +407,80 @@ def packet_handler(raw: str, addr):
         print("[JOINER] Use 'setup [PokemonName]' to send your BATTLE_SETUP.")
         return
 
-
     elif mtype == "BATTLE_SETUP":
         pkmn = msg.get("pokemon_name", "Unknown")
         opponent_setup_received = True
         opponent_pokemon_name = pkmn
         print(f"[EVENT] Received BATTLE_SETUP from opponent: {pkmn}")
-        
+    
+        # Set up the battle engine with both Pokémon
+        if battle_engine:
+            # Set opponent's Pokémon
+            if pkmn.lower() in pokemon_data:
+                battle_engine.opponent_pokemon = pokemon_data[pkmn.lower()]
+                print(f"[BATTLE] Set opponent Pokémon: {battle_engine.opponent_pokemon.name}")
+            else:
+                print(f"[ERROR] Opponent Pokémon '{pkmn}' not found!")
+            
+            # If we already sent our setup, complete the battle setup
+            if my_setup_sent and my_pokemon_name and my_pokemon_name.lower() in pokemon_data:
+                if not battle_engine.my_pokemon:
+                    battle_engine.my_pokemon = pokemon_data[my_pokemon_name.lower()]
+                    print(f"[BATTLE] Set my Pokémon: {battle_engine.my_pokemon.name}")
+            
+                # Set turn order - host goes first
+                battle_engine.is_my_turn = IS_HOST
+                my_turn = IS_HOST
+                print(f"[BATTLE] Engine ready: {battle_engine.my_pokemon.name} vs {battle_engine.opponent_pokemon.name}")
+                print(f"[BATTLE] My turn: {my_turn}")
+    
         # Pass to state machine
         if state_machine:
             response = state_machine.handle_incoming_message(msg)
             if response:
                 reliable.send(response)
-        
+    
         on_incoming_event(msg)
         _maybe_prompt_after_setup()
 
     elif mtype == "ATTACK_ANNOUNCE":
         move = msg.get("move_name", "Unknown Move")
         print(f"[ACTION] Opponent announced: {move}")
-        is_opponent_attack = not state_machine.current_turn_data.get('is_my_attack', False)
-
-        turn_result = battle_engine.handle_attack_announce(
-                    state_machine.current_turn_data['move_name'], 
-                    is_opponent_attack=is_opponent_attack
-                )
+    
+        # Process opponent's attack
+        if battle_engine and battle_engine.opponent_pokemon and battle_engine.my_pokemon:
+            turn_result = battle_engine.handle_attack_announce(move, is_opponent_attack=True)
+            print(f"[BATTLE] {turn_result['status_message']}")
+            print(f"[BATTLE] Took {turn_result['damage_dealt']} damage. My HP: {turn_result['defender_hp_remaining']}")
+        
+            if turn_result['defender_fainted']:
+                print(f"[DEFEAT] Your {battle_engine.my_pokemon.name} was defeated!")
+                game_over_msg = {
+                    "message_type": "GAME_OVER",
+                    "winner": battle_engine.opponent_pokemon.name,
+                    "loser": battle_engine.my_pokemon.name
+                }
+                reliable.send(game_over_msg)
+                global game_over
+                game_over = True
+            else:
+                # Now it's our turn - flip immediately
+                my_turn = True
+                battle_engine.is_my_turn = True
+                print(f"[TURN] It's now YOUR turn! My turn: {my_turn}")
+                _prompt_turn()
+    
+        # Pass to state machine for protocol handling
         if state_machine:
+            state_machine.current_turn_data = {
+                'move_name': move,
+                'is_my_attack': False
+            }
             response = state_machine.handle_incoming_message(msg)
             if response:
                 reliable.send(response)
                 print(f"[SENT] {response['message_type']}")
-                
-                if response['message_type'] == 'DEFENSE_ANNOUNCE':
-                    calc_report = state_machine.generate_calculation_report(turn_result)
-                    if calc_report:
-                        reliable.send(calc_report)
-                        print(f"[SENT] {calc_report['message_type']}")
-                        state_machine.transition_state("AWAITING_CALCULATION")
-        
+    
         on_incoming_event(msg)
 
     elif mtype == "DEFENSE_ANNOUNCE":
@@ -423,7 +515,7 @@ def packet_handler(raw: str, addr):
             state_machine.handle_incoming_message(msg)
         
         on_incoming_event(msg)
-        _flip_turn()
+        # Turn flip is now handled in attack processing
 
     elif mtype == "RESOLUTION_REQUEST":
         attacker = msg.get("attacker", "Unknown")

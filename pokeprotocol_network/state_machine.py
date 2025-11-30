@@ -3,6 +3,7 @@ class BattleStateMachine:
         self.engine = battle_engine
         self.state = "SETUP"
         self.current_turn_data = None
+        self.sequence_number = 1000
         
     def transition_state(self, new_state):
         """Safely transition between states"""
@@ -12,6 +13,7 @@ class BattleStateMachine:
     def handle_incoming_message(self, msg):
         """Process incoming messages based on current state"""
         msg_type = msg.get('message_type')
+        print(f"[STATE] Handling {msg_type} in state {self.state}")
         
         if self.state == "SETUP":
             if msg_type == "HANDSHAKE_RESPONSE":
@@ -21,7 +23,6 @@ class BattleStateMachine:
             elif msg_type == "BATTLE_SETUP":
                 # Store opponent's Pokémon info
                 opponent_pokemon = msg['pokemon_name']
-                self.engine.set_pokemon("my_pokemon", opponent_pokemon)  # You'll set your Pokémon separately
                 self.transition_state("WAITING_FOR_MOVE")
                 
         elif self.state == "WAITING_FOR_MOVE":
@@ -29,7 +30,8 @@ class BattleStateMachine:
                 # Opponent announced their attack
                 self.current_turn_data = {
                     'move_name': msg['move_name'],
-                    'sequence_number': msg['sequence_number']
+                    'is_my_attack': False,
+                    'sequence_number': msg.get('sequence_number', 0)
                 }
                 # Send defense announce
                 self.transition_state("PROCESSING_TURN")
@@ -38,22 +40,14 @@ class BattleStateMachine:
         elif self.state == "PROCESSING_TURN":
             if msg_type == "DEFENSE_ANNOUNCE":
                 # Both players can now calculate damage
-                turn_result = self.engine.handle_attack_announce(
-                    self.current_turn_data['move_name'], 
-                    is_opponent_attack=True
-                )
-                self.transition_state("AWAITING_CALCULATION")
-                return self.generate_calculation_report(turn_result)
+                if self.current_turn_data and not self.current_turn_data.get('is_my_attack', True):
+                    turn_result = self.engine.handle_attack_announce(
+                        self.current_turn_data['move_name'], 
+                        is_opponent_attack=True
+                    )
+                    self.transition_state("AWAITING_CALCULATION")
+                    return self.generate_calculation_report(turn_result)
                 
-            elif msg_type == "CALCULATION_REPORT":
-                # Compare calculations
-                if self.validate_calculation_report(msg):
-                    self.transition_state("CONFIRMING_CALCULATION")
-                    return self.generate_calculation_confirm()
-                else:
-                    self.transition_state("RESOLVING_DISCREPANCY")
-                    return self.generate_resolution_request()
-                    
         elif self.state == "AWAITING_CALCULATION":
             if msg_type == "CALCULATION_REPORT":
                 if self.validate_calculation_report(msg):
@@ -67,6 +61,7 @@ class BattleStateMachine:
             if msg_type == "CALCULATION_CONFIRM":
                 # Turn completed successfully
                 self.engine.is_my_turn = not self.engine.is_my_turn
+                print(f"[TURN] Turn changed. Is my turn: {self.engine.is_my_turn}")
                 self.transition_state("WAITING_FOR_MOVE")
                 self.current_turn_data = None
                 
@@ -77,6 +72,7 @@ class BattleStateMachine:
             elif msg_type == "CALCULATION_CONFIRM":
                 # Discrepancy resolved
                 self.engine.is_my_turn = not self.engine.is_my_turn
+                print(f"[TURN] Turn changed. Is my turn: {self.engine.is_my_turn}")
                 self.transition_state("WAITING_FOR_MOVE")
                 self.current_turn_data = None
                 
@@ -132,25 +128,30 @@ class BattleStateMachine:
     
     def validate_calculation_report(self, report_msg):
         """Compare received calculation report with our local calculation"""
+        if not self.current_turn_data:
+            return False
+            
         local_result = self.engine.handle_attack_announce(
             self.current_turn_data['move_name'],
             is_opponent_attack=True
         )
         
         # Compare key values (allow small rounding differences)
-        return (
-            abs(local_result['damage_dealt'] - int(report_msg['damage_dealt'])) <= 1 and
-            abs(local_result['defender_hp_remaining'] - int(report_msg['defender_hp_remaining'])) <= 1
-        )
+        damage_match = abs(local_result['damage_dealt'] - int(report_msg['damage_dealt'])) <= 1
+        hp_match = abs(local_result['defender_hp_remaining'] - int(report_msg['defender_hp_remaining'])) <= 1
+        
+        print(f"[VALIDATION] Damage: local={local_result['damage_dealt']}, remote={report_msg['damage_dealt']}, match={damage_match}")
+        print(f"[VALIDATION] HP: local={local_result['defender_hp_remaining']}, remote={report_msg['defender_hp_remaining']}, match={hp_match}")
+        
+        return damage_match and hp_match
     
     def get_next_sequence_number(self):
-        """Generate next sequence number (you'll replace this with network layer)"""
-        import random
-        return random.randint(1000, 9999)
+        """Generate next sequence number"""
+        self.sequence_number += 1
+        return self.sequence_number
 
     def handle_resolution_request(self, msg):
         """Handle incoming resolution request"""
         print(f"[RESOLUTION] Accepting opponent's calculation")
         self.transition_state("CONFIRMING_CALCULATION")
         return self.generate_calculation_confirm()
-
