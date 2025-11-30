@@ -1,5 +1,9 @@
 # PokeProtocol
-A Peer-to-Peer Pokémon Battle Protocol (PokeProtocol) using UDP as its transport layer.
+A peer-to-peer Pokémon battle simulator built with Python, featuring reliable UDP networking and turn-based combat mechanics.
+
+PokeProtocol is a distributed battle system that allows two players to engage in Pokémon battles over a network. The system uses a custom UDP-based protocol with reliability guarantees, ensuring synchronized game state between peers without requiring a central server. 
+
+It delivers a complete peer-to-peer battle experience with a reliable UDP protocol featuring ACK-based confirmation, automatic retransmission, and message deduplication. The battle system implements turn-based combat with authentic Pokémon mechanics including type effectiveness, stat-based damage calculation, and HP management. Deterministic RNG using shared seeds ensures both players experience identical battle outcomes, while a state machine protocol with calculation verification prevents desynchronization. Players can communicate through real-time chat, receive automatic battle announcements, and enjoy clear turn indicators throughout the match.
 
 
 to run network side locally: 
